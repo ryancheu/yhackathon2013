@@ -4,6 +4,8 @@ import static com.bulletphysics.demos.opengl.IGL.GL_COLOR_BUFFER_BIT;
 import static com.bulletphysics.demos.opengl.IGL.GL_DEPTH_BUFFER_BIT;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
 
 import javax.vecmath.Vector3f;
 
@@ -31,6 +33,7 @@ import com.bulletphysics.linearmath.DefaultMotionState;
 import com.bulletphysics.linearmath.Transform;
 import com.bulletphysics.util.ObjectArrayList;
 import com.leapmotion.leap.Controller;
+import com.leapmotion.leap.Vector;
 
 /**
  * BasicDemo is good starting point for learning the code base and porting.
@@ -51,6 +54,12 @@ public class BasicDemo extends DemoApplication {
 	private static final int START_POS_X = -5;
 	private static final int START_POS_Y = -5;
 	private static final int START_POS_Z = -3;
+	
+	private static final int SCALE_FACTOR = 10;
+	private static final float LINEAR_DAMPING = 0.9f;
+	private static final float ANGULAR_DAMPING =  0.5f;
+	
+	private ArrayList<Vector3f> mNextPoints = new ArrayList<Vector3f>();
 
 	// keep the collision shapes, for deletion/cleanup
 	private ObjectArrayList<CollisionShape> collisionShapes = new ObjectArrayList<CollisionShape>();
@@ -58,6 +67,9 @@ public class BasicDemo extends DemoApplication {
 	private CollisionDispatcher dispatcher;
 	private ConstraintSolver solver;
 	private DefaultCollisionConfiguration collisionConfiguration;
+	
+	private HashMap<Integer, RigidBody> mFingerBodies = new HashMap<Integer, RigidBody>();
+	private HashMap<Integer, Vector> mDesiredPosition = new HashMap<Integer, Vector>();
 
 	public BasicDemo(IGL gl) {
 		super(gl);
@@ -72,16 +84,72 @@ public class BasicDemo extends DemoApplication {
 
 		// step the simulation
 		if (dynamicsWorld != null) {
+
 			dynamicsWorld.stepSimulation(ms / 1000000f);
 			// optional but useful: debug drawing
 			dynamicsWorld.debugDrawWorld();
 		}
+		
+		addBoxesForPoints();
 
 		renderme();
 
 		// glFlush();
 		// glutSwapBuffers();
 	}
+	
+	public synchronized void addPoint(float x, float y, float z) {
+		mNextPoints.add(new Vector3f(x,y,z));
+	}
+	
+	private synchronized void addBoxesForPoints() {
+		RigidBody tempRigid;
+		ArrayList<Integer> toRemove = new ArrayList<Integer>();
+		for ( Integer rb : mFingerBodies.keySet() ) {
+			if ( mDesiredPosition.get(rb) == null ) {
+				dynamicsWorld.removeRigidBody(mFingerBodies.get(rb));
+				toRemove.add(rb);
+			} else {
+				Vector tempVector = mDesiredPosition.get(rb);
+				Vector3f intoWorld = new Vector3f(-(tempVector.getX()/SCALE_FACTOR + START_POS_X),
+												  (tempVector.getY()/SCALE_FACTOR + START_POS_Y)+10f,
+												  -(tempVector.getZ()/SCALE_FACTOR + START_POS_Z));
+			
+				Vector3f curPosition = mFingerBodies.get(rb).getCenterOfMassPosition(new Vector3f());
+				intoWorld.sub(curPosition);
+				mFingerBodies.get(rb).applyImpulse(intoWorld, new Vector3f(0,0,0));
+			}
+		}
+		
+		for ( Integer i : toRemove ){ 
+			mFingerBodies.remove(i);
+		}
+		
+		for ( Integer i : mDesiredPosition.keySet()) {
+			if ( mDesiredPosition.get(i) != null && mFingerBodies.containsKey(i) == false) {
+				System.out.println("adding box: " + i + " at: " +  mDesiredPosition.get(i));
+				mFingerBodies.put(i,createBox(new Vector3f(mDesiredPosition.get(i).getX(),
+									   mDesiredPosition.get(i).getY(),
+									   mDesiredPosition.get(i).getZ())));
+				
+			}
+		}
+	}
+	
+	public synchronized void setFingerNewPosition(int id, Vector oldPosition, Vector newPosition) {
+		mDesiredPosition.get(id).setX(newPosition.getX());
+		mDesiredPosition.get(id).setY(newPosition.getY());
+		mDesiredPosition.get(id).setZ(newPosition.getZ());
+	}
+
+    public synchronized void setFingerDelete(int id) {
+        mDesiredPosition.put(id, null);
+    }
+    
+    public synchronized void addFinger(int id, Vector position) {
+    	mDesiredPosition.put(id, position);
+    }
+	
 
 	@Override
 	public void displayCallback() {
@@ -189,12 +257,7 @@ public class BasicDemo extends DemoApplication {
 			float start_x = START_POS_X - ARRAY_SIZE_X / 2;
 			float start_y = START_POS_Y;
 			float start_z = START_POS_Z - ARRAY_SIZE_Z / 2;
-
-			for (int k = 0; k < ARRAY_SIZE_Y; k++) {
-				for (int i = 0; i < ARRAY_SIZE_X; i++) {
-					for (int j = 0; j < ARRAY_SIZE_Z; j++) {
-						startTransform.origin.set(2f * i + start_x, 10f + 2f
-								* k + start_y, 2f * j + start_z);
+						startTransform.origin.set(start_x, 10f+start_y, start_z);
 
 						// using motionstate is recommended, it provides
 						// interpolation capabilities, and only synchronizes
@@ -208,15 +271,16 @@ public class BasicDemo extends DemoApplication {
 
 						dynamicsWorld.addRigidBody(body);
 						body.setActivationState(RigidBody.ISLAND_SLEEPING);
-					}
-				}
-			}
 		}
 
 		clientResetScene();
 	}
+	
+	public RigidBody createBox(Vector3f v) {
+		return createBox(-v.x, v.y, -v.z);
+	}
 
-	public void createBox(float x, float y, float z) {
+	public synchronized RigidBody createBox(float x, float y, float z) {
 		// create a few dynamic rigidbodies
 		// Re-using the same collision is better for memory usage and
 		// performance
@@ -240,34 +304,32 @@ public class BasicDemo extends DemoApplication {
 			colShape.calculateLocalInertia(mass, localInertia);
 		}
 
-		float start_x = START_POS_X - ARRAY_SIZE_X / 2;
-		float start_y = START_POS_Y;
-		float start_z = START_POS_Z - ARRAY_SIZE_Z / 2;
+		float start_x = START_POS_X + (x/10) - ARRAY_SIZE_X / 2;
+		float start_y = START_POS_Y + (y/10);
+		float start_z = START_POS_Z + (z/10)- ARRAY_SIZE_Z / 2;
 
-		for (int k = 0; k < ARRAY_SIZE_Y; k++) {
-			for (int i = 0; i < ARRAY_SIZE_X; i++) {
-				for (int j = 0; j < ARRAY_SIZE_Z; j++) {
-					startTransform.origin.set(2f * i + start_x, 10f + 2f * k
-							+ start_y, 2f * j + start_z);
+		startTransform.origin.set(start_x, 10f+start_y, start_z);
 
-					// using motionstate is recommended, it provides
-					// interpolation capabilities, and only synchronizes
-					// 'active' objects
-					DefaultMotionState myMotionState = new DefaultMotionState(
-							startTransform);
-					RigidBodyConstructionInfo rbInfo = new RigidBodyConstructionInfo(
-							mass, myMotionState, colShape, localInertia);
-					RigidBody body = new RigidBody(rbInfo);
-					body.setActivationState(RigidBody.ISLAND_SLEEPING);
-
-					dynamicsWorld.addRigidBody(body);
-					body.setActivationState(RigidBody.ISLAND_SLEEPING);
-				}
-			}
-		}
+		// using motionstate is recommended, it provides
+		// interpolation capabilities, and only synchronizes 
+		// 'active' objects
+		DefaultMotionState myMotionState = new DefaultMotionState(
+				startTransform);
+		RigidBodyConstructionInfo rbInfo = new RigidBodyConstructionInfo(
+				mass, myMotionState, colShape, localInertia);
+		RigidBody body = new RigidBody(rbInfo);
+		body.setActivationState(RigidBody.ACTIVE_TAG); 
+		body.setDamping(LINEAR_DAMPING, ANGULAR_DAMPING);
+		dynamicsWorld.addRigidBody(body);
+		body.setActivationState(RigidBody.ACTIVE_TAG);
+		
+		return body;
 	}
 	private static Controller controller;
 	private static int mNumTimeSinceLast = 0;
+	private static int numMade = 0;
+	
+	
 	public static void main(String[] args) throws LWJGLException {
 		final BasicDemo ccdDemo = new BasicDemo(LWJGL.getGL());
 		ccdDemo.initPhysics();
@@ -282,9 +344,33 @@ public class BasicDemo extends DemoApplication {
 			
 			@Override
 			public void onFrameGotten(float x, float y, float z) {
-				if (mNumTimeSinceLast++ % 100 ==0 ) {
-					ccdDemo.createBox(x,y,z);
+				if (mNumTimeSinceLast++ % 5 ==0 ) {
+					ccdDemo.addPoint(x, y, z);
 				}
+			}
+
+			@Override
+			public void onFingerMove(int id, Vector newPosition,
+					Vector oldPosition) {
+				ccdDemo.setFingerNewPosition(id, oldPosition, newPosition);
+				/*System.out.println("Finger: " + id + "moved to: " 
+					+ newPosition.toString() + "from: " + oldPosition.toString());*/
+				
+				
+			}
+
+			@Override
+			public void onFingerNew(int id, Vector position) {
+				ccdDemo.addFinger(id, position);
+				//System.out.println("Finger: " + id + "new at: " + position);
+				
+			}
+
+			@Override
+			public void onFingerDelete(int id, Vector prevPosition) {
+				ccdDemo.setFingerDelete(id);
+				//System.out.println("Finger:" +id+"deleted at: " + prevPosition ); 
+				
 			}
 		});
 		controller = new Controller(listener);

@@ -1,0 +1,15 @@
+package leapmotion;
+
+import java.util.HashMap;
+
+import javax.vecmath.Vector3f;
+
+public class DataTrackerClass {
+	
+	HashMap<Integer, Vector3f> mFingers;
+	
+	public void addFinger(int id, Vector3f pos) {
+		
+	}
+
+}
